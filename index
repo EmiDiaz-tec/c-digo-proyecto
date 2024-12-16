@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Gestión de Pacientes</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <h1>Gestión de Pacientes</h1>
+  
+  <!-- Incluir barra de navegación desde navbar.html -->
+  <div id="navbar">
+    <ul id="menu"></ul> <!-- Aquí se agregarán dinámicamente las opciones del menú -->
+  </div>
+
+  <script>
+    // Insertar el contenido de navbar.html en el elemento con id "navbar"
+    fetch('/navbar.html')
+        .then(response => response.text())
+        .then(data => {
+            document.getElementById('navbar').innerHTML = data;
+        })
+        .catch(error => console.error('Error cargando el navbar:', error));
+
+    // Solicitar el tipo de usuario y ajustar el menú en función de este
+    fetch('/tipo-usuario')
+        .then(response => response.json())
+        .then(data => {
+            const menu = document.getElementById('menu');
+            const tipoUsuario = data.tipo_usuario;
+
+            // Agregar opciones de menú según el tipo de usuario
+            if (tipoUsuario === 'admin') {
+                menu.innerHTML += '<li><a href="/ver-usuarios">Ver Usuarios</a></li>';
+                menu.innerHTML += '<li><a href="/ordenar-medicos">Medicos</a></li>';
+                menu.innerHTML += '<li><a href="/download">Descargar Medicos</a></li>';
+                menu.innerHTML += '<li><a href="/downloadpdf">Descargar Medicos como Pdf</a></li>';
+            } else if (tipoUsuario === 'medico') {
+                menu.innerHTML += '<li><a href="/pacientes">Ver Pacientes</a></li>';
+                menu.innerHTML += '<li><a href="/ver-mis-datos">Medicos Asignados</a></li>';
+            } else if (tipoUsuario === 'paciente') {
+                menu.innerHTML += '<li><a href="/ver-mis-datos">Mis Datos</a></li>';
+                menu.innerHTML += '<li><a href="/busqueda.html">Busqueda de medico</a></li>';
+            }
+
+            // Opción de cerrar sesión para todos los tipos de usuario
+            menu.innerHTML += '<li><a href="/login.html">Cerrar Sesión</a></li>';
+            
+
+            // Controlar el contenido mostrado dependiendo del tipo de usuario
+            const adminContent = document.getElementById('adminContent');
+            const medico = document.getElementById('medicoContent');
+            const paciente = document.getElementById('pacienteContent');
+
+            // Ocultamos todas las secciones al principio
+            adminContent.style.display = 'none';
+            medicoContent.style.display = 'none';
+            pacienteContent.style.display = 'none';
+
+            // Mostrar la sección correspondiente según el tipo de usuario
+            if (tipoUsuario === 'admin') {
+                adminContent.style.display = 'block';} 
+                 if (tipoUsuario === 'medico') {
+                medicoContent.style.display = 'block'; }
+                if (tipoUsuario === 'paciente') {
+                  pacienteContent.style.display = 'block';} 
+        })
+        .catch(error => console.error('Error obteniendo el tipo de usuario:', error));
+  </script>
+
+  <!-- Contenido para Administradores -->
+  <div id="adminContent" style="display: none;">
+    <h2>Panel de Administrador</h2>
+    <p>Acceso exclusivo para administradores.</p>
+    
+  <form action="/actualizar" method="POST">
+    <h2>Actualizar Usuario</h2>
+    <label for="currentName">Usuario</label>
+    <input type="text" id="currentName" name="currentName">
+
+    <label for="name">Nuevo usuario</label>
+    <input type="text" id="name" name="name">
+    
+    <label for="password"> Nueva Contraseña:</label>
+    <input type="text" id="password" name="password">
+    <button type="submit">Guardar</button>
+  </form>
+    <form action="/eliminar-usuario" method="POST">
+      <h2>Eliminar Usuario</h2>
+      <label for="nombre_usuario">Nombre de Usuario a Eliminar:</label>
+      <input type="text" id="nombre_usuario" name="nombre_usuario" required>
+      <br><br>
+      <button type="submit">Eliminar Usuario</button>
+    </form>
+
+    
+<form action="/insertar-medico" method="POST">
+  <h2>Registrar Médico</h2>
+  <label for="medico-name">Nombre del médico:</label>
+  <input type="text" id="medico-name" name="medico_name">
+
+  <label for="especialidad">Especialidad:</label>
+  <input type="text" id="especialidad" name="especialidad">
+
+  <button type="submit">Guardar Médico</button>
+</form>
+
+<form action="/upload" method="POST" enctype="multipart/form-data">
+  <h2>Cargar Equipos desde Excel</h2>
+  <input type="file" name="excelFile" accept=".xlsx" />
+  <button type="submit">Subir Archivo</button>
+</form>
+  </div>
+
+  <!-- Contenido para Medicos -->
+  <div id="medicoContent" style="display: none;">
+    <h2>Panel de Medico</h2>
+    <p>Acceso exclusivo para medicos.</p>
+    <form action="/actualizar-paciente" method="POST">
+      <h2>Datos del paciente</h2>
+
+      <label for="id">Id del Paciente:</label>
+      <input type="number" id="id" name="id">
+
+      <label for="name">Nombre:</label>
+      <input type="text" id="name" name="name">
+  
+      <label for="apellido">Apellido:</label>
+      <input type="text" id="apellido" name="apellido">
+      
+      <label for="age">Edad:</label>
+      <input type="number" id="age" name="age">
+    
+      <label for="rate">Frecuencia Cardiaca (bpm):</label>
+      <input type="number" id="rate" name="rate">
+  
+      <label for="fecha">Fecha de cita:</label>
+      <input type="date" id="fecha" name="fecha">
+    
+      <button type="submit">Guardar</button>
+    </form>
+
+      <form action="/eliminar-paciente" method="POST">
+        <h2>Eliminar Paciente</h2>
+        <label for="nombre_usuario">Nombre del paciente a Eliminar:</label>
+        <input type="text" id="nombre_usuario" name="nombre_usuario" required>
+        <label for="id">id del paciente:</label>
+        <input type="text" id="id" name="id" required>
+        <button type="submit">Eliminar Pacinte</button>
+      </form>
+  </div>
+
+  <!-- Contenido para Pacientes -->
+  <div id="pacienteContent" style="display: none;">
+    <h2>Bienvenido al sistema</h2>
+    <p>Acceso limitado.</p>
+    <form action="/submit-data" method="POST">
+      
+      <label for="name">Nombre:</label>
+      <input type="text" id="name" name="name">
+  
+      <label for="apellido">Apellido:</label>
+      <input type="text" id="apellido" name="apellido">
+      
+      <label for="age">Edad:</label>
+      <input type="number" id="age" name="age">
+    
+      <label for="heart-rate">Frecuencia Cardiaca (bpm):</label>
+      <input type="number" id="heart-rate" name="heart_rate">
+  
+      <label for="medico">Numero del Medico:</label>
+      <input type="number" id="medico" name="medico">
+    
+      <button type="submit">Guardar</button>
+    </form>
+
+  </div>
+</body>
+</html>
