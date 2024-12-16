@@ -1,0 +1,691 @@
+const express = require('express');
+const app = express();
+const path = require('path');
+const bodyParser = require('body-parser');
+const mysql = require('mysql2');
+const session = require('express-session');
+const bcrypt = require('bcrypt');
+const multer = require('multer');
+const xlsx = require('xlsx');
+const PDFDocument = require('pdfkit');
+const fs = require('fs');
+require('dotenv').config();
+
+// Configuración de la base de datos
+const connection = mysql.createConnection({
+  host: process.env.DB_HOST,       // Host desde .env
+  user: process.env.DB_USER,       // Usuario desde .env
+  password: process.env.DB_PASSWORD,   // Contraseña desde .env
+  database: process.env.DB_NAME    // Nombre de la base de datos desde .env
+});
+
+
+connection.connect(err => {
+  if (err) throw err;
+  console.log('Conectado a la base de datos de MYSQL');
+});
+
+
+// Configuración de Middleware
+app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.urlencoded({ extended: true }));
+app.use(express.json());
+
+// Configuración de la sesión
+app.use(session({
+  secret: 'secretKey',
+  resave: false,
+  saveUninitialized: false,
+}));
+
+function requireLogin(req, res, next) {
+  if (!req.session.user) {
+    return res.redirect('/login.html');
+  }
+  next();
+}
+
+function requireRole(role) {
+  return (req, res, next) => {
+      if (req.session.user && req.session.user.tipo_usuario === role) {
+          next();
+      } else {
+          res.status(403).send('Acceso denegado');
+      }
+  };
+}
+
+app.use(bodyParser.urlencoded({ extended: true }));
+
+// Ruta para la página principal
+app.get('/',requireLogin, (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'index.html'));
+});
+// Servir archivos estáticos (HTML)
+app.use(express.static(path.join(__dirname, 'public')));
+
+// Iniciar sesión
+app.post('/login', (req, res) => {
+  const { nombre_usuario, password } = req.body;
+  // Consulta para obtener el usuario y su tipo
+  const query = 'SELECT * FROM usuarios WHERE nombre_usuario = ?';
+  connection.query(query, [nombre_usuario], (err, results) => {
+    console.log(nombre_usuario);
+      if (err) {
+          return res.send('Error al obtener el usuario');
+      }
+
+      if (results.length === 0) {
+          return res.send('Usuario no encontrado');
+      }
+
+      const usuarios = results[0];
+
+      // Verificar la contraseña
+      const isPasswordValid = bcrypt.compareSync(password, usuarios.password_hash);
+      if (!isPasswordValid) {
+          return res.send('Contraseña incorrecta');
+      }
+
+      // Almacenar la información del usuario en la sesión
+      req.session.user = {
+          id: usuarios.id,
+          nombre_usuario: usuarios.nombre_usuario,
+          tipo_usuario: usuarios.tipo_usuario // Aquí se establece el tipo de usuario en la sesión
+      };
+
+      // Redirigir al usuario a la página principal
+      res.redirect('/');
+  });
+});
+console
+// Cerrar sesión
+app.get('/logout', (req, res) => {
+  req.session.destroy();
+  res.redirect('/login');
+});
+ 
+
+// Registro de usuario
+app.post('/registro', (req, res) => {
+  const { username, password, codigo_acceso } = req.body;
+
+  const query = 'SELECT tipo_usuario FROM codigos_acceso WHERE codigo = ?';
+  connection.query(query, [codigo_acceso], (err, results) => {
+      if (err || results.length === 0) {
+          return res.send('Código de acceso inválido');
+      }
+
+      const tipo_usuario = results[0].tipo_usuario;
+      const hashedPassword = bcrypt.hashSync(password, 10);
+
+      const insertUser = 'INSERT INTO usuarios (nombre_usuario, password_hash, tipo_usuario) VALUES (?, ?, ?)';
+      connection.query(insertUser, [username, hashedPassword, tipo_usuario], (err) => {
+          if (err) return res.send('Error al registrar usuario');
+          res.redirect('/login.html');
+      });
+  });
+});
+
+const upload = multer({ dest: 'uploads/' });
+
+app.post('/upload',requireLogin,requireRole('admin'), upload.single('excelFile'), (req, res) => {
+  const filePath = req.file.path;
+  const workbook = xlsx.readFile(filePath);
+  const sheetName = workbook.SheetNames[0];
+  const data = xlsx.utils.sheet_to_json(workbook.Sheets[sheetName]);
+
+  data.forEach(row => {
+    const { nombre, especialidad } = row;
+    const sql = `INSERT INTO medicos (nombre, especialidad) VALUES (?, ?)`;
+    connection.query(sql, [nombre, especialidad], err => {
+      if (err) throw err;
+    });
+  });
+
+  res.send('<h1>Archivo cargado y datos guardados</h1><a href="/">Volver</a>');
+});
+
+app.get('/download',requireLogin,requireRole('admin'), (req, res) => {
+  const sql = `SELECT * FROM medicos`;
+  connection.query(sql, (err, results) => {
+    if (err) throw err;
+
+    const worksheet = xlsx.utils.json_to_sheet(results);
+    const workbook = xlsx.utils.book_new();
+    xlsx.utils.book_append_sheet(workbook, worksheet, 'medicos');
+
+    const filePath = path.join(__dirname, 'uploads', 'medicos.xlsx');
+    xlsx.writeFile(workbook, filePath);
+    res.download(filePath, 'medicos.xlsx');
+  });
+});
+
+app.get('/downloadpdf', requireLogin, requireRole('admin'), (req, res) => {
+  const sql = `SELECT * FROM medicos`;
+  connection.query(sql, (err, results) => {
+    if (err) throw err;
+    const doc = new PDFDocument();
+    const filePath = path.join(__dirname, 'uploads', 'medicos.pdf');
+    const writeStream = fs.createWriteStream(filePath);
+    doc.pipe(writeStream);
+    doc.fontSize(16).text('Lista de Médicos', { align: 'center' }).moveDown();
+    results.forEach((row, index) => {
+      doc.fontSize(12).text(
+        `${index + 1}. Nombre: ${row.nombre}, Especialidad: ${row.especialidad}, Teléfono: ${row.telefono}`
+      );
+    });
+    doc.end();
+    writeStream.on('finish', () => {
+      res.download(filePath, 'medicos.pdf', (err) => {
+        if (err) {
+          console.error('Error al descargar el archivo:', err);
+          res.status(500).send('Error al descargar el archivo');
+        }
+        fs.unlink(filePath, (err) => {
+          if (err) console.error('Error al eliminar el archivo temporal:', err);
+        });
+      });
+    });
+
+    writeStream.on('error', (err) => {
+      console.error('Error al escribir el archivo PDF:', err);
+      res.status(500).send('Error al generar el archivo PDF');
+    });
+  });
+});
+
+
+// Ruta para obtener el tipo de usuario actual
+app.get('/tipo-usuario', requireLogin, (req, res) => {
+  res.json({ tipo_usuario: req.session.user.tipo_usuario });
+});
+
+// Ruta para guardar datos en la base de datos
+app.post('/submit-data',requireLogin, (req, res) => {
+  const { name,apellido, age, heart_rate, medico } = req.body;
+
+  const query = 'INSERT INTO pacientes ( nombre, apellido, edad, frecuencia_cardiaca, medico_id) VALUES (?, ?, ?, ?, ?)';
+  connection.query(query, [ name, apellido, age, heart_rate, medico ], (err, result) => {
+    if (err) {
+      return res.send('Error al guardar los datos en la base de datos.');
+    }
+    res.send(`Paciente ${name} guardado en la base de datos.`);
+  });
+});
+
+// Ruta para actualizar usuario y/o contraseña
+app.post('/actualizar',requireLogin, (req, res) => {
+  const { name, password, currentName } = req.body;
+
+  // Verificar que al menos uno de los campos esté presente
+  if (!name && !password) {
+    return res.status(400).send('Debe proporcionar un nuevo nombre de usuario o una nueva contraseña.');
+  }
+
+  // Inicia la consulta de actualización
+  let query = 'UPDATE usuarios SET';
+  const updates = [];
+  const params = [];
+
+  // Agregar cambio de nombre si se proporciona
+  if (name) {
+    updates.push('nombre_usuario = ?');
+    params.push(name);
+  }
+
+  // Agregar cambio de contraseña si se proporciona
+  if (password) {
+    const hashedPassword = bcrypt.hashSync(password, 10);
+    updates.push('password_hash = ?');
+    params.push(hashedPassword);
+  }
+
+  // Asegurarse de que la consulta afecta al usuario actual
+  query += ` ${updates.join(', ')} WHERE nombre_usuario = ?`;
+  params.push(currentName);
+
+  // Ejecutar la consulta
+  connection.query(query, params, (err, results) => {
+    if (err) {
+      console.error('Error al actualizar los datos del usuario:', err);
+      return res.status(500).send('Hubo un error al actualizar los datos.');
+    }
+
+    // Verificar si se actualizó algún registro
+    if (results.affectedRows === 0) {
+      return res.status(404).send(`No se encontró un usuario con el nombre ${currentName}.`);
+    }
+
+    res.send(`Los datos del usuario han sido actualizados correctamente.`);
+  });
+});
+
+
+// Ruta para eliminar usuario
+app.post('/eliminar-usuario',requireLogin, (req, res) => {
+  const { nombre_usuario } = req.body; // Obtén el nombre de usuario del formulario
+
+  // Verificar si se proporcionó el nombre de usuario
+  if (!nombre_usuario) {
+    return res.status(400).send('El nombre de usuario es obligatorio.');
+  }
+
+  // Consulta SQL para eliminar el usuario
+  const query = 'DELETE FROM usuarios WHERE nombre_usuario = ?';
+
+  connection.query(query, [nombre_usuario], (err, results) => {
+    if (err) {
+      console.error('Error al eliminar el usuario:', err);
+      return res.status(500).send('Hubo un error al eliminar el usuario.');
+    }
+
+    // Verificar si se eliminó algún usuario
+    if (results.affectedRows === 0) {
+      return res.status(404).send(`No se encontró un usuario con el nombre ${nombre_usuario}.`);
+    }
+
+    res.send(`Usuario ${nombre_usuario} eliminado correctamente.`);
+  });
+});
+
+// Ruta para mostrar los usuarios registrados
+app.get('/ver-usuarios',requireLogin, requireRole('admin') ,(req, res) => {
+  connection.query('SELECT * FROM usuarios', (err, results) => {
+    if (err) {
+      return res.send('Error al obtener los datos.');
+    }
+
+    let html = `
+      <html>
+      <head>
+        <link rel="stylesheet" href="/styles.css">
+        <title>Pacientes</title>
+      </head>
+      <body>
+        <h1>Pacientes Registrados</h1>
+        <table>
+          <thead>
+            <tr>
+              <th>id</th>
+              <th>Nombre</th>
+              <th>Tipo de usuario</th>
+            </tr>
+          </thead>
+          <tbody>
+    `;
+
+    results.forEach(paciente => {
+      html += `
+        <tr>
+          <td>${paciente.id}</td>
+          <td>${paciente.nombre_usuario}</td>
+          <td>${paciente.tipo_usuario}</td>
+        
+        </tr>
+      `;
+    });
+
+    html += `
+          </tbody>
+        </table>
+        <button onclick="window.location.href='/'">Volver</button>
+      </body>
+      </html>
+    `;
+
+    res.send(html);
+  });
+});
+
+app.get('/buscar', (req, res) => {
+  const query = req.query.query || '';
+  const sql = `SELECT id, nombre, especialidad FROM medicos WHERE nombre LIKE ?`;
+  connection.query(sql, [`%${query}%`], (err, results) => {
+    if (err) {
+      console.error('Error en la consulta SQL:', err);
+      res.status(500).json({ error: 'Error en el servidor' });
+      return;
+    }
+    res.json(results);
+  });
+});
+
+
+
+
+// Ruta para mostrar los datos de la base de datos en formato HTML
+app.get('/pacientes',requireLogin, requireRole('medico') ,(req, res) => {
+  connection.query('SELECT * FROM pacientes ORDER BY fecha_cita ASC', (err, results) => {
+    if (err) {
+      return res.send('Error al obtener los datos.');
+    }
+
+    let html = `
+      <html>
+      <head>
+        <link rel="stylesheet" href="/styles.css">
+        <title>Pacientes</title>
+      </head>
+      <body>
+        <h1>Pacientes Registrados</h1>
+        <table>
+          <thead>
+            <tr>
+              <th>id</th>
+              <th>Nombre</th>
+              <th>Apellido</th>
+              <th>Edad</th>
+              <th>Frecuencia Cardiaca (bpm)</th>
+              <th>Fecha de cita</th>
+            </tr>
+          </thead>
+          <tbody>
+    `;
+
+    results.forEach(paciente => {
+      html += `
+        <tr>
+          <td>${paciente.id}</td>
+          <td>${paciente.nombre}</td>
+          <td>${paciente.apellido}</td>
+          <td>${paciente.edad}</td>
+          <td>${paciente.frecuencia_cardiaca}</td>
+          <td>${paciente.fecha_cita}</td>
+        </tr>
+      `;
+    });
+
+    html += `
+          </tbody>
+        </table>
+        <button onclick="window.location.href='/'">Volver</button>
+      </body>
+      </html>
+    `;
+
+    res.send(html);
+  });
+});
+ 
+
+
+
+// Ruta para insertar un nuevo médico
+app.post('/insertar-medico',requireLogin, requireRole('admin') ,(req, res) => {
+  const { medico_name, especialidad } = req.body;
+  const query = 'INSERT INTO medicos (nombre, especialidad) VALUES (?, ?)';
+
+  connection.query(query, [medico_name, especialidad], (err, result) => {
+    if (err) {
+      return res.send('Error al insertar el médico.');
+    }
+    res.send(`Médico ${medico_name} guardado exitosamente.`);
+  });
+});
+
+// Ruta para mostrar los datos de la base de datos en formato HTML
+app.get('/medicos',requireLogin,requireRole('admin'), (req, res) => {
+  connection.query('SELECT * FROM medicos ORDER BY nombre ASC', (err, results) => {
+    if (err) {
+      return res.send('Error al obtener los datos.');
+    }
+
+    let html = `
+      <html>
+      <head>
+        <link rel="stylesheet" href="/styles.css">
+        <title>Medicos</title>
+      </head>
+      <body>
+        <h1>Medicos Registrados</h1>
+        <table>
+          <thead>
+            <tr>
+              <th>id</th>
+              <th>Nombre</th>
+              <th>especialidad</th>
+            </tr>
+          </thead>
+          <tbody>
+    `;
+
+    results.forEach(medico => {
+      html += `
+        <tr>
+          <td>${medico.id}</td>
+          <td>${medico.nombre}</td>
+          <td>${medico.especialidad}</td>
+        </tr>
+      `;
+    });
+
+    html += `
+          </tbody>
+        </table>
+        <button onclick="window.location.href='/'">Volver</button>
+      </body>
+      </html>
+    `;
+
+    res.send(html);
+  });
+});
+
+// Ruta para ordenar medicos por nombre
+app.get('/ordenar-medicos',requireLogin,requireRole('admin'), (req, res) => {
+  const query = 'SELECT * FROM medicos ORDER BY nombre ASC';
+
+  connection.query(query, (err, results) => {
+    if (err) {
+      return res.send('Error al obtener los datos.');
+    }
+
+    let html = `
+      <html>
+      <head>
+        <link rel="stylesheet" href="/styles.css">
+        <title>Medicos Ordenados</title>
+      </head>
+      <body>
+        <h1>Medicos Ordenados por Nombre</h1>
+        <table>
+          <thead>
+            <tr>
+              <th>Nombre</th>
+              <th>Especialidad</th>
+            </tr>
+          </thead>
+          <tbody>
+    `;
+
+    results.forEach(medico => {
+      html += `
+        <tr>
+          <td>${medico.nombre}</td>
+          <td>${medico.especialidad}</td>
+        </tr>
+      `;
+    });
+
+    html += `
+          </tbody>
+        </table>
+        <button onclick="window.location.href='/'">Volver</button>
+      </body>
+      </html>
+    `;
+
+    res.send(html);
+  });
+});
+
+// ver una tabla con llave foranea para ver el paciente y su medico
+app.get('/ver-mis-datos', requireLogin, (req, res) => {
+  const query = `
+    SELECT 
+      pacientes.nombre AS paciente, 
+      pacientes.edad, 
+      medicos.nombre AS medico, 
+      medicos.especialidad 
+    FROM pacientes 
+    JOIN medicos ON pacientes.medico_id = medicos.id
+  `;
+
+  connection.query(query, (err, results) => {
+    if (err) {
+      return res.status(500).send('Error al obtener los datos.');
+    }
+
+    let html = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <link rel="stylesheet" href="/styles.css">
+        <title>Tabla Pacientes y Médicos</title>
+      </head>
+      <body>
+        <h1>Pacientes y sus Médicos</h1>
+        <table>
+          <thead>
+            <tr>
+              <th>Paciente</th>
+              <th>Edad</th>
+              <th>Médico</th>
+              <th>Especialidad</th>
+            </tr>
+          </thead>
+          <tbody>
+    `;
+
+    results.forEach(row => {
+      html += `
+        <tr>
+          <td>${row.paciente}</td>
+          <td>${row.edad}</td>
+          <td>${row.medico}</td>
+          <td>${row.especialidad}</td>
+        </tr>
+      `;
+    });
+
+    html += `
+          </tbody>
+        </table>
+        <button onclick="window.location.href='/'">Volver</button>
+      </body>
+      </html>
+    `;
+
+    res.send(html);
+  });
+});
+
+
+app.post('/actualizar-paciente', (req, res) => {
+  const { id, name, apellido, age, rate, fecha } = req.body;
+
+  // Verificar que se haya proporcionado un ID
+  if (!id) {
+    return res.status(400).send('El ID del paciente es obligatorio.');
+  }
+
+  // Inicializar las partes de la consulta
+  const updates = [];
+  const params = [];
+
+  // Agregar cambios si se proporcionan y son válidos
+  if (typeof name === 'string' && name.trim() !== '') {
+    updates.push('nombre = ?');
+    params.push(name.trim());
+  }
+  if (typeof apellido === 'string' && apellido.trim() !== '') {
+    updates.push('apellido = ?');
+    params.push(apellido.trim());
+  }
+  if (typeof age !== 'undefined' && !isNaN(age)) {
+    updates.push('edad = ?');
+    params.push(Number(age));
+  }
+  if (typeof rate !== 'undefined' && !isNaN(rate)) {
+    updates.push('frecuencia_cardiaca = ?');
+    params.push(Number(rate));
+  }
+  if (typeof fecha === 'string' && fecha.trim() !== '') {
+    updates.push('fecha_cita = ?');
+    params.push(fecha.trim());
+  }
+
+  // Validar que hay campos para actualizar
+  if (updates.length === 0) {
+    return res.status(400).send('No hay campos válidos para actualizar.');
+  }
+
+  // Construir la consulta con las actualizaciones dinámicas
+  const query = `UPDATE pacientes SET ${updates.join(', ')} WHERE id = ?`;
+  params.push(id);
+
+  // Ejecutar la consulta
+  connection.query(query, params, (err, results) => {
+    if (err) {
+      console.error('Error al actualizar los datos del paciente:', err);
+      return res.status(500).send('Hubo un error al actualizar los datos del paciente.');
+    }
+
+    // Verificar si se actualizó algún registro
+    if (results.affectedRows === 0) {
+      return res.status(404).send('No se encontró un paciente con el ID proporcionado.');
+    }
+
+    res.send('Los datos del paciente han sido actualizados correctamente.');
+  });
+});
+
+
+// Ruta para eliminar usuario
+app.post('/eliminar-paciente', (req, res) => {
+  const { id } = req.body; // Obtén el nombre de usuario del formulario
+console.log(id);
+
+  // Verificar si se proporcionó el id de usuario
+  if (!id) {
+    return res.status(400).send('El id del usuario es obligatorio.');
+  }
+
+  // Consulta SQL para eliminar el usuario
+  const query = 'DELETE FROM pacientes WHERE id = ?';
+
+  connection.query(query, [id], (err, results) => {
+    if (err) {
+      console.error('Error al eliminar el usuario:', err);
+      return res.status(500).send('Hubo un error al eliminar el usuario.');
+    }
+
+    // Verificar si se eliminó algún usuario
+    if (results.affectedRows === 0) {
+      return res.status(404).send(`No se encontró un usuario.`);
+    }
+
+    res.send(`Usuario eliminado correctamente.`);
+  });
+});
+
+
+
+
+
+
+
+
+
+
+// Configuración de puerto
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`Servidor en funcionamiento en el puerto ${PORT}`));
+
+
+
+
+
+
+
